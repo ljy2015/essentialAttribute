@@ -38,6 +38,7 @@ public class readfile {
 			String str = "";
 			while (null != (str = br.readLine())) {
 				content.append(str);
+				System.out.println(str);
 			}
 			br.close();
 		} catch (Exception e) {

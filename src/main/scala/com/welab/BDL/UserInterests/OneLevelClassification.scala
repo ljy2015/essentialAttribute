@@ -137,9 +137,9 @@ object OneLevelClassification {
     result
   }
 
-  def deal_train_data(filename: String): ArrayBuffer[(String, String)] = {
+  def deal_train_data(filename: String): ArrayBuffer[(String, (String, Int))] = {
 
-    var result = new scala.collection.mutable.ArrayBuffer[(String, String)]()
+    var result = new scala.collection.mutable.ArrayBuffer[(String, (String, Int))]()
 
     val segment = HanLP.newSegment().enableNameRecognize(true).enableTranslatedNameRecognize(true)
       .enableJapaneseNameRecognize(true).enablePlaceRecognize(true).enableOrganizationRecognize(true)
@@ -147,35 +147,34 @@ object OneLevelClassification {
 
     subdirs(new File(filename)).foreach { x =>
       val label = x.getName()
-      println(label)
+      //println(label)
 
       listfiles(x).foreach { file =>
 
         println(file.getAbsolutePath)
         val txt = readFile(file.getAbsolutePath)
-
+        val doc_lenght = txt.length() //文档的长度
         var termList = segment.seg(txt); //对字符串txt进行分词
-        result.+=((deal_segment(termList), label))
+        result.+=((deal_segment(termList), (label, doc_lenght)))
       }
 
     }
-
     result
   }
 
   //将所有文档的数据进行存储
   def save_all_data(sc: SparkContext, train_filename: String, test_filename: String, save_train_filename: String, save_test_filename: String) {
     val traindata = deal_train_data(train_filename)
-
     println("train size is " + traindata.length)
-    val traindata_rdd = sc.parallelize(traindata, 100).map { x => x._1 + "::" + x._2 }.saveAsTextFile(save_train_filename)
+    val traindata_rdd = sc.parallelize(traindata, 100).map { x => x._1 + "::" + x._2._1 + "#" + x._2._2 }.saveAsTextFile(save_train_filename)
 
     val testdata = deal_train_data(test_filename)
     println("test size is " + traindata.length)
-    val testdata_rdd = sc.parallelize(testdata, 100).map { x => x._1 + "::" + x._2 }.saveAsTextFile(save_test_filename)
+    val testdata_rdd = sc.parallelize(testdata, 100).map { x => x._1 + "::" + x._2._1 + "#" + x._2._2 }.saveAsTextFile(save_test_filename)
   }
 
   def feature_alldata(sc: SparkContext, filename: String): RDD[String] = {
+
     val data = sc.textFile(filename, 1000)
 
     //计算所有的特征词
@@ -202,6 +201,141 @@ object OneLevelClassification {
       .reduceByKey(_ + _).map { x => x._1 } //所有词对应的IDF
 
     all_feature
+  }
+  
+   def select_feature(sc: SparkContext, filename: String): RDD[String] = {
+
+    val data = sc.textFile(filename, 1000)
+
+  //计算所有的特征词
+    val all_feature = data.map { x =>
+      val label = x.split("::")(1)
+      val wds = x.split("::")(0)
+      val fields = wds.split(",")
+      val doc_words = new scala.collection.mutable.HashSet[String]()
+
+      for (field <- fields) {
+        if (!doc_words.contains(field)) {
+          doc_words.add(field)
+        }
+      }
+      var result = ""
+      for (wd <- doc_words) {
+        if (result.isEmpty()) {
+          result = wd + ":" + label
+        } else {
+          result = result + "," + wd + ":" + label
+        }
+      }
+      result
+    }.flatMap(x => x.split(",")).map { x =>
+      val word_label = x.split(":")
+      (word_label(0), word_label(1))
+    }.reduceByKey { (x, y) => x + "," + y }.map { x =>
+      val labels = x._2.split(",")
+      val doc_words_label = new scala.collection.mutable.HashSet[String]()
+      for (label <- labels) {
+        doc_words_label.add(label)
+      }
+      var result=""
+      for(i <- 1 to 32){
+        if(doc_words_label.contains(i.toString())&&doc_words_label.size == 1){
+          result=x._1
+        }
+      }
+      result
+    }.filter { x => !x.isEmpty() }
+    all_feature
+  }
+
+  def other_feature(sc: SparkContext, filename: String) /*: RDD[String] = */ {
+    val data = sc.textFile(filename, 1000)
+
+    //所有类别都包含的词个数
+    val allfeature = sc.accumulator(0)
+    //第一类特有词的个数
+    val unique1 = sc.accumulator(0)
+    val all1 = sc.accumulator(0) //第一类所有词的个数
+    //第二类特有词的个数
+    val unique4 = sc.accumulator(0)
+    val all4 = sc.accumulator(0)
+    //第三类特有词的个数
+    val unique6 = sc.accumulator(0)
+    val all6 = sc.accumulator(0)
+
+    //有交集的特征词个数
+    val inter = sc.accumulator(0)
+
+    //计算所有的特征词
+    val all_feature = data.map { x =>
+      val label = x.split("::")(1)
+      val wds = x.split("::")(0)
+      val fields = wds.split(",")
+      val doc_words = new scala.collection.mutable.HashSet[String]()
+
+      for (field <- fields) {
+        if (!doc_words.contains(field)) {
+          doc_words.add(field)
+        }
+      }
+      var result = ""
+      for (wd <- doc_words) {
+        if (result.isEmpty()) {
+          result = wd + ":" + label
+        } else {
+          result = result + "," + wd + ":" + label
+        }
+      }
+      result
+    }.flatMap(x => x.split(",")).map { x =>
+      val word_label = x.split(":")
+      (word_label(0), word_label(1))
+    }.reduceByKey { (x, y) => x + "," + y }.foreach { x =>
+      val labels = x._2.split(",")
+      val doc_words_label = new scala.collection.mutable.HashSet[String]()
+      for (label <- labels) {
+        doc_words_label.add(label)
+      }
+      val word = x._1
+
+      if (doc_words_label.size >= 3) {
+        allfeature += 1
+      }
+
+      if (doc_words_label.size > 1) {
+        inter += 1
+      }
+
+      if (doc_words_label.contains("1")) {
+        all1 += 1
+        if (doc_words_label.size == 1) {
+          unique1 += 1
+        }
+      }
+      if (doc_words_label.contains("4")) {
+        all4 += 1
+        if (doc_words_label.size == 1) {
+          unique4 += 1
+        }
+      }
+      if (doc_words_label.contains("6")) {
+        all6 += 1
+        if (doc_words_label.size == 1) {
+          unique6 += 1
+        }
+      }
+
+    }
+
+    println("include two class up term occur is : " + inter)
+    println("All class include term occur is : " + allfeature)
+    println("the 1th class include all term occur is : " + all1)
+    println("Only the 1th class include all term occur is : " + unique1)
+    println("the 4th class include all term occur is : " + all4)
+    println("Only the 4th class include all term occur is : " + unique4)
+    println("the 6th class include all term occur is : " + all6)
+    println("Only the 6th class include all term occur is : " + unique6)
+
   }
 
   //直接计算得到每个特征词的tf_idf，不保留特征词
@@ -305,7 +439,7 @@ object OneLevelClassification {
     TFIDF
   }
 
-  def TF_IDF(sc: SparkContext, filename: String, feature_alldata: Array[String]): RDD[(HashMap[String, Double], Int)] = {
+  def TF_IDF(sc: SparkContext, filename: String, feature_alldata: Array[String],k1:Double,b:Double): RDD[(HashMap[String, Double], Int)] = {
     println(filename)
     val data = sc.textFile(filename, 1000)
     val doc_num = data.count();
@@ -331,7 +465,7 @@ object OneLevelClassification {
       }
       result
     }.flatMap { x => x.split(",") }.map { x => (x, 1) }
-      .reduceByKey(_ + _).map { x => (x._1, math.log10(doc_num.toDouble / x._2.toDouble)) }.collect() //所有词对应的IDF
+      .reduceByKey(_ + _).map { x => (x._1, math.log10(((doc_num.toDouble - x._2.toDouble) + 0.5) / (x._2.toDouble) + 0.5)) }.collect() //所有词对应的IDF
 
     //将idf变成map，方便查询 
     val idf_map = new scala.collection.mutable.HashMap[String, Double]()
@@ -341,11 +475,23 @@ object OneLevelClassification {
     //将idf广播出去
     val idf_broad = sc.broadcast(idf_map)
 
+    //计算平均document的长度
+    val vagdl = data.map { x =>
+      val words = x.split("::")(0)
+      val label = x.split("::")(1).split("#")(0).toInt
+      
+      x.split("::")(1).split("#")(1).toInt
+    }
+    val avgdls=vagdl.sum().toDouble/vagdl.count()
+
     //计算TF
     val TFIDF = data.map { x =>
-      println(x)
+//      println(x)
       val words = x.split("::")(0)
-      val label = x.split("::")(1).toInt
+      val label = x.split("::")(1).split("#")(0).toInt
+//      println("label is : " +label)
+      val doc_lenght = x.split("::")(1).split("#")(1).toInt
+//      println("doc_lenght is : " +doc_lenght)
       val fields = words.split(",")
       val words_num = new scala.collection.mutable.HashMap[String, Int]() //每个词对应的频率
       var all_words_num = 0 //所有词个数
@@ -377,7 +523,7 @@ object OneLevelClassification {
           }
 
         }
-        words_tf_idf.put(word, (tf * idf))
+        words_tf_idf.put(word, (tf*(k1+1)/(tf+k1*(1-b+b*doc_lenght/avgdls)) * idf))
       }
 
       /*for (word <- words_num) {
@@ -451,7 +597,7 @@ object OneLevelClassification {
 
   //将tf-idf的结果进行保存了。
   def data_TF_IDF(sc: SparkContext, filename: String, allfeature: Array[String], save_tfidf_path: String) {
-    val traindata_TF_IDF = TF_IDF(sc, filename, allfeature).map { x =>
+    val traindata_TF_IDF = TF_IDF(sc, filename, allfeature,1.5,0.75).map { x =>
       var temp = ""
       for (word <- x._1) {
         if (temp.isEmpty()) {
@@ -467,7 +613,7 @@ object OneLevelClassification {
   }
 
   def train(sc: SparkContext, filename: String, feature_alldata: Array[String], save_model_path: String) {
-    val traindata_TF_IDF = TF_IDF(sc, filename, feature_alldata).map { x =>
+    val traindata_TF_IDF = TF_IDF(sc, filename, feature_alldata,1.5,0.75).map { x =>
       val temp = scala.collection.mutable.ArrayBuffer[Double]()
       for (word <- x._1) {
         temp.append(word._2)
@@ -479,53 +625,63 @@ object OneLevelClassification {
     model.save(sc, save_model_path)
   }
 
-  def predict(sc: SparkContext, model_path: String,testdata:RDD[LabeledPoint]) {
+  def predict(sc: SparkContext, model_path: String, testdata: RDD[LabeledPoint]) {
     val model = NaiveBayesModel.load(sc, model_path)
-    val predictionAndLabel = testdata.map(p => (model.predict(p.features), p.label,p))
-    
+    val predictionAndLabel = testdata.map(p => (model.predict(p.features), p.label, p))
+
     val accuracy_total = 1.0 * predictionAndLabel.filter(x => x._1 == x._2).count() / testdata.count()
-    println("accuracy_total is : "+accuracy_total)
+    println("accuracy_total is : " + accuracy_total)
     for (i <- 1 to 32) {
       val accuracy = (1.0 * predictionAndLabel.filter(x => x._1 == i && x._2 == i).count().toDouble / testdata.filter { x => x.label == i }.count())
       println("the " + i + "th's accuracy is : " + accuracy)
     }
   }
 
-
   def main(args: Array[String]): Unit = {
+
+    println("test Three class result!!!!")
+
     val conf = new SparkConf().setAppName("OneLevelClassification")
     val sc = new SparkContext(conf)
 
     //val data=sc.textFile("D:\\Work\\wolaidai\\用户兴趣模型\\alldata")
 
     //保存一下中间结果
-    val train_filename = "/disk1/jobs/Jeffery/userInteresting/data/traindata"
-    //val train_filename = args(0)
-    val test_filename = "/disk1/jobs/Jeffery/userInteresting/data/testdata"
-    //val test_filename = args(1)
-    val save_train_filename = "/user/Jeffery/userInterest/train_data"
-    //val save_train_filename =args(2)
-    val save_test_filename = "/user/Jeffery/userInterest/test_data"
-    //val save_test_filename = args(3)
-    //save_all_data(sc, train_filename, test_filename, save_train_filename, save_test_filename) //这个只要执行一次就行
+    //    val train_filename = "/disk1/jobs/Jeffery/userInteresting/data/traindata"
+    //    val test_filename = "/disk1/jobs/Jeffery/userInteresting/data/testdata"
+    //    val save_train_filename = "/user/Jeffery/userInterest/train_data"
+    //    val save_test_filename = "/user/Jeffery/userInterest/test_data"
+    //下面是为了测试模型使用了部分数据集
+    val train_filename = "/disk1/jobs/Jeffery/userInteresting/test_model_data/traindata"
+    val test_filename = "/disk1/jobs/Jeffery/userInteresting/test_model_data/testdata"
 
-    //计算训练集所有的特征
-    val all_feature_save_path = "/user/Jeffery/userInterest/all_feature"
+    val save_train_filename = "/user/Jeffery/userInterest/train_data_test"
+    val save_test_filename = "/user/Jeffery/userInterest/test_data_test"
+
+    //get train data(这个只要执行一次就行)
+    save_all_data(sc, train_filename, test_filename, save_train_filename, save_test_filename)
+
+    //feature select(计算训练集所有的特征)
+    //    val all_feature_save_path = "/user/Jeffery/userInterest/all_feature"
+    val all_feature_save_path = "/user/Jeffery/userInterest/all_feature_test"
+    //other_feature(sc, save_train_filename)
     val all_feature = feature_alldata(sc, save_train_filename)
-    //all_feature.saveAsTextFile(all_feature_save_path)//保存所有的特征词
+    //val all_feature = select_feature(sc,save_train_filename)
+    all_feature.saveAsTextFile(all_feature_save_path) //保存所有的特征词
     val allfeature = all_feature.collect()
 
     println("all_feature size is:" + allfeature.length)
-    
-    val modelpath="/user/Jeffery/userInterest/model"
-    val local_model_path="/disk1/jobs/Jeffery/userInteresting/model"
-//    train(sc,save_train_filename,allfeature,local_model_path)
+
+    //create and train model (创建并训练模型)
+    //    val modelpath = "/user/Jeffery/userInterest/model"
+    val modelpath = "/user/Jeffery/userInterest/model_test"
+    train(sc, save_train_filename, allfeature, modelpath)
 
     //val train_save_tfidf_path = "/user/Jeffery/userInterest/train_data_TFIDF"
     //data_TF_IDF(sc, save_train_filename, allfeature, train_save_tfidf_path)
     //TF_IDF_new(sc, save_train_filename, allfeature).saveAsTextFile(train_save_tfidf_path)
 
-    val testdata = TF_IDF(sc, save_test_filename, allfeature).map { x =>
+    val testdata = TF_IDF(sc, save_test_filename, allfeature,1.5,0.75).map { x =>
       val temp = scala.collection.mutable.ArrayBuffer[Double]()
       for (word <- x._1) {
         temp.append(word._2)
@@ -537,7 +693,7 @@ object OneLevelClassification {
     //data_TF_IDF(sc, save_train_filename, all_feature, test_save_tfidf_path)
     //TF_IDF_new(sc, save_train_filename, allfeature).saveAsTextFile(test_save_tfidf_path)
 
-    predict(sc,modelpath,testdata)
+    predict(sc, modelpath, testdata)
     //NaiveBayesMethod(sc, traindata_TF_IDF, testdata)
     //NaiveBayesMethod(sc, train_save_tfidf_path, test_save_tfidf_path)
 

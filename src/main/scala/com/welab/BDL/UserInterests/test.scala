@@ -113,13 +113,11 @@ object test {
       //println("the " + label + " file count is :" + occur)
     }*/
 
-    val ss = Array(1, 2, 3, 4)
+/*    val ss = Array(1, 2, 3, 4)
     val conf = new SparkConf().setAppName("OneLevelClassification").setMaster("local")
-    val sc = new SparkContext(conf)
+    val sc = new SparkContext(conf)*/
     //sc.parallelize(Array(LabeledPoint(1,Vectors.dense(Array(1.0,2.0,3.0))))).saveAsTextFile("D:\\Work\\wolaidai\\用户兴趣模型\\test")
-
-    val ssa=sc.textFile("D:\\Work\\wolaidai\\用户兴趣模型\\test").foreach { x => println(x) }
-    
+    println("你好你好nihao".length())
     
   }
 }
